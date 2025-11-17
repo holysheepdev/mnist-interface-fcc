@@ -1,0 +1,8 @@
+/* Card helper (optional extra softness) */
+.card{box-shadow:0 1px 2px rgba(0,0,0,.06)}
+
+/* Prevent text selection while swiping the carousel */
+.noselect, .noselect *{user-select:none;-webkit-user-select:none}
+
+/* Small bar-chart bars */
+.bar{width:1.5rem;border-top-left-radius:.25rem;border-top-right-radius:.25rem;background:var(--gray-900)}
