@@ -76,3 +76,5 @@ export default defineConfig([
 
 
 https://cloudcomputinguniapi.azure-api.net/score
+https://ml.azure.com/workspaces?tid=e258ade0-4568-4115-8c79-3304e1628734
+https://portal.azure.com/#@alexteotrocangmail.onmicrosoft.com/resource/subscriptions/ab7932aa-ec12-499e-a66e-f9c703b098f5/resourceGroups/Uni/providers/Microsoft.ApiManagement/service/CloudComputingUniAPI/apim-apis
