@@ -73,3 +73,6 @@ export default defineConfig([
   },
 ])
 ```
+
+
+https://cloudcomputinguniapi.azure-api.net/score

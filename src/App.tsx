@@ -182,13 +182,102 @@ export default function App() {
       }
 
       const json = await resp.json();
-      // Expected: { latex: "\\text{5}", probs: number[] } or batch format
-      const probs: number[] = json.probs || (json.predictions ? json.predictions[0].probs : []);
-      const pred = probs.length ? probs.indexOf(Math.max(...probs)) : NaN;
-      const confidence = probs.length ? Math.max(...probs) : NaN;
+
+      // Robustly handle APIs that return a JSON string (e.g. '"{\"latex\": ... }"')
+      let payload: any = json;
+      if (typeof payload === "string") {
+        try {
+          payload = JSON.parse(payload);
+        } catch (e) {
+          // leave as-is if it can't be parsed
+        }
+      }
+
+      // Normalize probs from various possible response shapes
+      let probs: number[] = [];
+
+      if (Array.isArray(payload?.probs)) {
+        probs = payload.probs.map((v: any) => Number(v));
+      } else if (Array.isArray(payload?.predictions)) {
+        const firstPred = payload.predictions[0];
+        if (firstPred) {
+          if (Array.isArray(firstPred.probs)) probs = firstPred.probs.map((v: any) => Number(v));
+          else if (Array.isArray(firstPred)) probs = firstPred.map((v: any) => Number(v));
+          else if (Array.isArray(firstPred.probabilities)) probs = firstPred.probabilities.map((v: any) => Number(v));
+        }
+      } else if (Array.isArray(payload)) {
+        // handle batch array responses
+        const first = payload[0];
+        if (first) {
+          if (Array.isArray(first.probs)) probs = first.probs.map((v: any) => Number(v));
+          else if (Array.isArray(first)) probs = first.map((v: any) => Number(v));
+        }
+      }
+
+      // Coerce to finite numbers (fallback to 0)
+      probs = probs.map((v: any) => {
+        const n = Number(v);
+        return Number.isFinite(n) ? n : 0;
+      });
+
+      // If we didn't find probs, try a few alternate keys
+      if (!probs.length) {
+        if (Array.isArray(payload?.scores)) probs = payload.scores.map((v: any) => Number(v));
+        else if (Array.isArray(payload?.output)) probs = payload.output.map((v: any) => Number(v));
+      }
+
+      // If still empty, leave as-is (UI will show no bars)
+
+      // Ensure probs are normalized to a probability distribution in [0,1]
+      if (probs.length) {
+        const sum = probs.reduce((a, b) => a + b, 0);
+        const hasOutOfRange = probs.some((v) => v < 0 || v > 1);
+        const notSummingToOne = Math.abs(sum - 1) > 1e-3;
+
+        if (hasOutOfRange || notSummingToOne) {
+          // Often responses are logits or un-normalized scores. Apply stable softmax.
+          const max = Math.max(...probs);
+          const exps = probs.map((v) => Math.exp(v - max));
+          const expSum = exps.reduce((a, b) => a + b, 0) || 1;
+          probs = exps.map((e) => e / expSum);
+        } else if (Math.abs(sum - 1) > 1e-12) {
+          // Minor numerical drift: normalize by sum
+          const s = sum || 1;
+          probs = probs.map((v) => v / s);
+        }
+      }
+
+      // Compute prediction index (argmax) and confidence safely from normalized probs
+      let pred: number = NaN;
+      let confidence: number = NaN;
+      if (probs.length) {
+        let maxIdx = 0;
+        for (let i = 1; i < probs.length; i++) {
+          if (probs[i] > probs[maxIdx]) maxIdx = i;
+        }
+        pred = maxIdx;
+        confidence = probs[maxIdx];
+      }
+
+      // Extract and normalize LaTeX string
+      const rawLatexRaw = payload?.latex ?? (payload?.predictions ? payload.predictions[0]?.latex : undefined) ?? "";
+      let latex = "";
+      if (typeof rawLatexRaw === "string") {
+        // Normalize double-escaped backslashes (e.g. "\\text{1}")
+        latex = rawLatexRaw.replace(/\\\\/g, "\\");
+        // If the latex itself is a quoted JSON string, try to unquote it
+        if (latex.startsWith('"') && latex.endsWith('"')) {
+          try {
+            latex = JSON.parse(latex);
+          } catch (e) {
+            // ignore
+          }
+        }
+      }
+
       const correct = selectedLabel != null ? pred === selectedLabel : false;
 
-      setResult({ latex: json.latex || (json.predictions ? json.predictions[0].latex : ""), probs, pred, confidence, correct });
+      setResult({ latex, probs, pred, confidence, correct });
     } catch (e: any) {
       setError(e?.message || String(e));
     } finally {
@@ -279,9 +368,9 @@ export default function App() {
             <div className="text-sm text-gray-500 mb-2">Prediction</div>
             {result ? (
               <div className="space-y-1">
-                <div className="text-xl font-semibold">{result.latex || `\\text{${String(result.pred)}}`}</div>
+                <div className="text-xl font-semibold font-mono">{result.latex || `\\text{${String(result.pred)}}`}</div>
                 <div className="text-sm">Predicted digit: <span className="font-medium">{result.pred}</span></div>
-                <div className="text-sm">Confidence: <span className="font-medium">{Number.isFinite(result.confidence) ? result.confidence.toFixed(3) : "–"}</span></div>
+                <div className="text-sm">Confidence: <span className="font-medium">{Number.isFinite(result.confidence) ? `${(result.confidence * 100).toFixed(6)}% (${result.confidence.toFixed(6)})` : "–"}</span></div>
                 <div className={`inline-block mt-2 px-2 py-1 rounded-full text-xs ${result.correct ? "bg-green-100 text-green-800" : "bg-red-100 text-red-800"}`}>
                   {result.correct ? "Correct" : "Incorrect"}
                 </div>
@@ -297,12 +386,23 @@ export default function App() {
           <Card className="p-5 mt-6">
             <div className="text-sm text-gray-500 mb-3">Per-class probabilities</div>
             <div className="grid grid-cols-10 gap-2 items-end">
-              {result.probs.map((p, idx) => (
-                <div key={idx} className="flex flex-col items-center">
-                  <div className="w-6 rounded-t bg-gray-900" style={{ height: `${Math.max(2, p * 100)}px` }} />
-                  <div className="text-[10px] text-gray-500 mt-1">{idx}</div>
-                </div>
-              ))}
+              {(() => {
+                const probs = result.probs || [];
+                const maxP = Math.max(...probs);
+                const MAX_PX = 120; // full-height in pixels for the largest bar
+                const MIN_PX = 6; // minimum visible height
+                return probs.map((p, idx) => {
+                  // If maxP is tiny/zero, fall back to absolute probability scaling
+                  const heightPx = maxP > 0 ? Math.max(MIN_PX, (p / maxP) * MAX_PX) : Math.max(MIN_PX, p * MAX_PX);
+                  return (
+                    <div key={idx} className="flex flex-col items-center" title={`${(p * 100).toFixed(6)}%`}>
+                      <div className="w-6 rounded-t bg-gray-900" style={{ height: `${heightPx}px` }} />
+                      <div className="text-[10px] text-gray-500 mt-1">{idx}</div>
+                      <div className="text-[10px] text-gray-400">{(p * 100).toFixed(2)}%</div>
+                    </div>
+                  );
+                });
+              })()}
             </div>
           </Card>
         )}
